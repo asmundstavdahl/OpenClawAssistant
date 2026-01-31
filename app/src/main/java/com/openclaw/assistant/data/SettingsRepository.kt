@@ -53,6 +53,16 @@ class SettingsRepository(context: Context) {
         get() = prefs.getBoolean(KEY_HOTWORD_ENABLED, false)
         set(value) = prefs.edit().putBoolean(KEY_HOTWORD_ENABLED, value).apply()
 
+    // TTS enabled
+    var ttsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_TTS_ENABLED, true) // Default true as per user request
+        set(value) = prefs.edit().putBoolean(KEY_TTS_ENABLED, value).apply()
+
+    // Continuous mode
+    var continuousMode: Boolean
+        get() = prefs.getBoolean(KEY_CONTINUOUS_MODE, false)
+        set(value) = prefs.edit().putBoolean(KEY_CONTINUOUS_MODE, value).apply()
+
     // Connection Verified
     var isVerified: Boolean
         get() = prefs.getBoolean(KEY_IS_VERIFIED, false)
@@ -80,6 +90,8 @@ class SettingsRepository(context: Context) {
         private const val KEY_SESSION_ID = "session_id"
         private const val KEY_HOTWORD_ENABLED = "hotword_enabled"
         private const val KEY_IS_VERIFIED = "is_verified"
+        private const val KEY_TTS_ENABLED = "tts_enabled"
+        private const val KEY_CONTINUOUS_MODE = "continuous_mode"
 
 
 

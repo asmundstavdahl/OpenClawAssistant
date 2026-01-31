@@ -84,7 +84,7 @@ class SpeechRecognizerManager(private val context: Context) {
                     else -> "不明なエラー ($error)"
                 }
                 
-                trySend(SpeechResult.Error(errorMessage))
+                trySend(SpeechResult.Error(errorMessage, error))
                 
                 // If busy, we don't necessarily close immediately if we want to retry manually in session,
                 // but for now, let the session handle the error result.
@@ -102,7 +102,7 @@ class SpeechRecognizerManager(private val context: Context) {
                         alternatives = matches.drop(1)
                     ))
                 } else {
-                    trySend(SpeechResult.Error("認識結果がありません"))
+                    trySend(SpeechResult.Error("認識結果がありません", SpeechRecognizer.ERROR_NO_MATCH))
                 }
                 close()
             }
@@ -188,5 +188,5 @@ sealed class SpeechResult {
         val confidence: Float,
         val alternatives: List<String>
     ) : SpeechResult()
-    data class Error(val message: String) : SpeechResult()
+    data class Error(val message: String, val code: Int? = null) : SpeechResult()
 }

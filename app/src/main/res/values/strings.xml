@@ -16,6 +16,14 @@
     <string name="hotword_enabled_label">Enable Hotword Detection</string>
     <string name="picovoice_key_label">Picovoice Access Key</string>
     <string name="picovoice_key_hint">Get from free account</string>
+    <string name="back_button">Back</string>
+    <string name="mic_permission_required">Microphone permission required</string>
+    <string name="processing">Processing…</string>
+    <string name="error_label">Error</string>
+    <string name="try_again_button">Try again</string>
+    <string name="ask_hint">Ask OpenClaw…</string>
+    <string name="send_description">Send</string>
+    <string name="stop_description">Stop</string>
     <string name="listening">Listening…</string>
     <string name="thinking">Thinking…</string>
     <string name="speaking">Speaking…</string>

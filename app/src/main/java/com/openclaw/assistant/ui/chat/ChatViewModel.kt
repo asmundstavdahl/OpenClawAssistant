@@ -1,6 +1,7 @@
 package com.openclaw.assistant.ui.chat
 
 import android.app.Application
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -10,10 +11,9 @@ import com.openclaw.assistant.api.OpenClawClient
 import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.speech.SpeechRecognizerManager
 import com.openclaw.assistant.speech.SpeechResult
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.Locale
@@ -81,7 +81,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         val responseText = response.getResponseText() ?: "No response"
                         addMessage(responseText, isUser = false)
                         _uiState.update { it.copy(isThinking = false) }
-                        speak(responseText)
+                        if (settings.ttsEnabled) {
+                            speak(responseText)
+                        } else if (lastInputWasVoice && settings.continuousMode) {
+                            // If TTS is disabled but we're in continuous mode, restart listening directly
+                            viewModelScope.launch {
+                                kotlinx.coroutines.delay(500)
+                                startListening()
+                            }
+                        }
                     },
                     onFailure = { error ->
                         _uiState.update { it.copy(isThinking = false, error = error.message) }
@@ -102,22 +110,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (_uiState.value.isListening) return
 
         lastInputWasVoice = true // Mark as voice input
-
-        // Cancel existing and wait for cleanup
         listeningJob?.cancel()
 
         // Stop TTS if speaking
         tts?.stop()
 
-        // Wait for TTS resource release before starting mic
-        viewModelScope.launch {
-            kotlinx.coroutines.delay(500) // Wait for TTS to release resources
+        listeningJob = viewModelScope.launch {
+            val startTime = System.currentTimeMillis()
+            var hasActuallySpoken = false
+            
+            // Wait for TTS resource release before starting mic
+            delay(500)
 
-            Log.e(TAG, "Setting isListening = true")
-            _uiState.update { it.copy(isListening = true, partialText = "") }
+            while (isActive && !hasActuallySpoken) {
+                Log.e(TAG, "Starting speechManager.startListening(), isListening=true")
+                _uiState.update { it.copy(isListening = true, partialText = "") }
 
-            listeningJob = viewModelScope.launch {
-                Log.e(TAG, "Starting speechManager.startListening()")
                 speechManager.startListening("ja-JP").collect { result ->
                     Log.e(TAG, "SpeechResult: $result")
                     when (result) {
@@ -125,15 +133,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             _uiState.update { it.copy(partialText = result.text) }
                         }
                         is SpeechResult.Result -> {
+                            hasActuallySpoken = true
                             _uiState.update { it.copy(isListening = false, partialText = "") }
                             sendMessage(result.text)
                         }
                         is SpeechResult.Error -> {
-                            _uiState.update { it.copy(isListening = false, error = result.message) }
-                            lastInputWasVoice = false
+                            val elapsed = System.currentTimeMillis() - startTime
+                            val isTimeout = result.code == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || 
+                                          result.code == SpeechRecognizer.ERROR_NO_MATCH
+                            
+                            if (isTimeout && settings.continuousMode && elapsed < 5000) {
+                                Log.d(TAG, "Speech timeout within 5s window ($elapsed ms), retrying loop...")
+                                // Just fall through to next while iteration
+                                _uiState.update { it.copy(isListening = false) }
+                            } else {
+                                // Permanent error or out of time
+                                _uiState.update { it.copy(isListening = false, error = result.message) }
+                                lastInputWasVoice = false
+                                hasActuallySpoken = true // Break the while loop
+                            }
                         }
                         else -> {}
                     }
+                }
+                
+                if (!hasActuallySpoken) {
+                    delay(300) // Small gap between retries
                 }
             }
         }
@@ -158,8 +183,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             
             _uiState.update { it.copy(isSpeaking = false) }
 
-            // If it was a voice conversation, continue listening
-            if (success && lastInputWasVoice) {
+            // If it was a voice conversation and continuous mode is on, continue listening
+            if (success && lastInputWasVoice && settings.continuousMode) {
                 // Explicit cleanup and wait for TTS to fully release audio focus
                 speechManager.destroy()
                 kotlinx.coroutines.delay(1000) // Increased from 800ms for more reliable cleanup

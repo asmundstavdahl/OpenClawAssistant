@@ -307,7 +307,7 @@ fun SpeakingIndicator(onStop: () -> Unit) {
             Icon(Icons.Default.Mic, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onErrorContainer)
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                "Listening...", 
+                "Speaking...", 
                 fontSize = 14.sp, 
                 color = MaterialTheme.colorScheme.onErrorContainer,
                 fontWeight = androidx.compose.ui.text.font.FontWeight.Medium

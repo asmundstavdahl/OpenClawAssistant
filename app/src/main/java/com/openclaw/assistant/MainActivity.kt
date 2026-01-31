@@ -33,7 +33,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import com.openclaw.assistant.data.SettingsRepository
+import com.openclaw.assistant.service.OpenClawAssistantService
 import com.openclaw.assistant.service.HotwordService
 import com.openclaw.assistant.ui.theme.OpenClawAssistantTheme
 
@@ -110,6 +112,15 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Hotword detection stopped", Toast.LENGTH_SHORT).show()
         }
     }
+
+    fun isAssistantActive(): Boolean {
+        return try {
+            val setting = Settings.Secure.getString(contentResolver, "assistant")
+            setting?.contains(packageName) == true
+        } catch (e: Exception) {
+            false
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -120,8 +131,11 @@ fun MainScreen(
     onOpenAssistantSettings: () -> Unit,
     onToggleHotword: (Boolean) -> Unit
 ) {
+    val context = LocalContext.current
     var isConfigured by remember { mutableStateOf(settings.isConfigured()) }
     var hotwordEnabled by remember { mutableStateOf(settings.hotwordEnabled) }
+    var isAssistantSet by remember { mutableStateOf((context as? MainActivity)?.isAssistantActive() ?: false) }
+    var showTroubleshooting by remember { mutableStateOf(false) }
     
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -130,6 +144,7 @@ fun MainScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 isConfigured = settings.isConfigured()
                 hotwordEnabled = settings.hotwordEnabled
+                isAssistantSet = (context as? MainActivity)?.isAssistantActive() ?: false
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -177,9 +192,12 @@ fun MainScreen(
             ActionCard(
                 icon = Icons.Default.Home,
                 title = "Long Press Home Button",
-                description = "Requires setting as system assistant",
+                description = if (isAssistantSet) "System Assistant: Active" else "System Assistant: Not Configured",
+                isHighlight = !isAssistantSet,
                 actionText = "Open Settings",
-                onClick = onOpenAssistantSettings
+                onClick = onOpenAssistantSettings,
+                showInfo = true,
+                onInfoClick = { showTroubleshooting = true }
             )
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -240,6 +258,10 @@ fun MainScreen(
             }
         }
     }
+
+    if (showTroubleshooting) {
+        TroubleshootingDialog(onDismiss = { showTroubleshooting = false })
+    }
 }
 
 @Composable
@@ -299,7 +321,10 @@ fun ActionCard(
     onClick: (() -> Unit)? = null,
     showSwitch: Boolean = false,
     switchValue: Boolean = false,
-    onSwitchChange: ((Boolean) -> Unit)? = null
+    onSwitchChange: ((Boolean) -> Unit)? = null,
+    isHighlight: Boolean = false,
+    showInfo: Boolean = false,
+    onInfoClick: (() -> Unit)? = null
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -330,8 +355,18 @@ fun ActionCard(
                 Text(
                     text = description,
                     fontSize = 13.sp,
-                    color = Color.Gray
+                    color = if (isHighlight && !showSwitch) MaterialTheme.colorScheme.error else Color.Gray
                 )
+            }
+
+            if (showInfo) {
+                IconButton(onClick = onInfoClick ?: {}) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.HelpOutline,
+                        contentDescription = "Help",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
 
             if (showSwitch) {
@@ -423,5 +458,76 @@ fun WarningCard(message: String, onClick: () -> Unit) {
                 tint = Color(0xFFFF9800)
             )
         }
+    }
+}
+
+@Composable
+fun TroubleshootingDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Assist Gesture Not Working?") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    "Even if set as default, some system features might override the long-press gesture.",
+                    fontSize = 14.sp
+                )
+                
+                BulletPoint(
+                    title = "Circle to Search (Overrides Long-Press)", 
+                    desc = "If holding the home button triggers a search screen:\n" +
+                           "• Pixel: Settings > System > Navigation mode > Tap Gear icon > Turn off Circle to Search.\n" +
+                           "• Samsung: Settings > Display > Navigation bar > Turn off Circle to Search."
+                )
+                
+                BulletPoint(
+                    title = "Gesture Navigation (Corner Swipe)", 
+                    desc = "If you don't have a home button (swipe navigation), swipe up diagonally from either the bottom-left or bottom-right corner to launch the assistant."
+                )
+                
+                BulletPoint(
+                    title = "Google App Setting", 
+                    desc = "Open Google App > Tap Profile > Settings > Google Assistant > General > Turn off 'Google Assistant' if it still interferes."
+                )
+
+                BulletPoint(
+                    title = "Refresh Binding", 
+                    desc = "If status is 'Active' but it still won't work, try changing 'Digital assistant app' to 'None' and then back to 'OpenClaw Assistant'."
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(8.dp))
+
+                val context = LocalContext.current
+                Button(
+                    onClick = {
+                        val intent = Intent(OpenClawAssistantService.ACTION_DEBUG_SHOW_SESSION)
+                        intent.setPackage(context.packageName)
+                        context.sendBroadcast(intent)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                ) {
+                    Text("Debug: Force Start Session")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Got it")
+            }
+        }
+    )
+}
+
+@Composable
+fun BulletPoint(title: String, desc: String) {
+    Column {
+        Text("• $title", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Text(desc, fontSize = 13.sp, color = Color.Gray, modifier = Modifier.padding(start = 12.dp))
     }
 }

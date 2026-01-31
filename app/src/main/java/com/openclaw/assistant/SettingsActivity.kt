@@ -59,6 +59,8 @@ fun SettingsScreen(
 ) {
     var webhookUrl by remember { mutableStateOf(settings.webhookUrl) }
     var authToken by remember { mutableStateOf(settings.authToken) }
+    var ttsEnabled by remember { mutableStateOf(settings.ttsEnabled) }
+    var continuousMode by remember { mutableStateOf(settings.continuousMode) }
     
     var showAuthToken by remember { mutableStateOf(false) }
     
@@ -83,6 +85,8 @@ fun SettingsScreen(
                         onClick = {
                             settings.webhookUrl = webhookUrl
                             settings.authToken = authToken
+                            settings.ttsEnabled = ttsEnabled
+                            settings.continuousMode = continuousMode
                             onSave()
                         },
                         enabled = webhookUrl.isNotBlank() && !isTesting
@@ -145,6 +149,51 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Voice Settings
+            Text(
+                text = "Voice Settings",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Voice Output", style = MaterialTheme.typography.bodyLarge)
+                            Text("Read AI responses aloud", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        }
+                        Switch(checked = ttsEnabled, onCheckedChange = { ttsEnabled = it })
+                    }
+                    
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), thickness = 0.5.dp)
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Continuous Conversation", style = MaterialTheme.typography.bodyLarge)
+                            Text("Auto-start mic after AI speaks", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        }
+                        Switch(checked = continuousMode, onCheckedChange = { continuousMode = it })
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
 

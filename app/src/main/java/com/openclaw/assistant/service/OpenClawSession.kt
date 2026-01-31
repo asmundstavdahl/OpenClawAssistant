@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.service.voice.VoiceInteractionSession
+import android.speech.SpeechRecognizer
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
@@ -67,6 +68,7 @@ class OpenClawSession(context: Context) : VoiceInteractionSession(context),
     private var errorMessage = mutableStateOf<String?>(null)
 
     override fun onCreate() {
+        Log.d(TAG, "Session onCreate")
         super.onCreate()
         speechManager = SpeechRecognizerManager(context)
         ttsManager = TTSManager(context)
@@ -88,6 +90,7 @@ class OpenClawSession(context: Context) : VoiceInteractionSession(context),
         get() = savedStateRegistryController.savedStateRegistry
 
     override fun onCreateContentView(): View {
+        Log.d(TAG, "Session onCreateContentView")
         // Initialize lifecycle and saved state
         savedStateRegistryController.performAttach()
         savedStateRegistryController.performRestore(null)
@@ -118,7 +121,7 @@ class OpenClawSession(context: Context) : VoiceInteractionSession(context),
         lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_START)
         lifecycleRegistry.handleLifecycleEvent(androidx.lifecycle.Lifecycle.Event.ON_RESUME)
         
-        Log.d(TAG, "Session shown")
+        Log.d(TAG, "Session shown with flags: $showFlags")
         
         // PAUSE Hotword Service to prevent microphone conflict
         sendPauseBroadcast()
@@ -182,75 +185,77 @@ class OpenClawSession(context: Context) : VoiceInteractionSession(context),
     private var listeningJob: Job? = null
 
     private fun startListening() {
-        // Cancel previous listening job if any
         listeningJob?.cancel()
         
-        // Don't show "Listening..." yet. Show "Processing..." or keep previous state 
-        // until the recognizer is actually ready.
         currentState.value = AssistantState.PROCESSING
-        displayText.value = "" // Clear text
+        displayText.value = ""
         partialText.value = ""
         errorMessage.value = null
 
         listeningJob = scope.launch {
-            // Ensure previous resources are cleaned up
+            val startTime = System.currentTimeMillis()
+            var hasActuallySpoken = false
+            
+            // Wait for resources
             delay(300)
 
-            // Request audio focus properly for API 26+
-            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                audioFocusRequest = android.media.AudioFocusRequest.Builder(
-                    android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
-                ).build()
-                audioManager.requestAudioFocus(audioFocusRequest!!)
-            } else {
-                @Suppress("DEPRECATION")
-                audioManager.requestAudioFocus(null,
-                    android.media.AudioManager.STREAM_VOICE_CALL,
-                    android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-            }
-            
-            speechManager.startListening("ja-JP").collectLatest { result ->
-                when (result) {
-                    is SpeechResult.Ready -> {
-                        Log.d(TAG, "Speech ready")
-                        // NOW we are ready to listen
-                        currentState.value = AssistantState.LISTENING
-                        displayText.value = "Listening..."
-                        toneGenerator.startTone(android.media.ToneGenerator.TONE_PROP_BEEP)
-                    }
-                    is SpeechResult.Listening -> {
-                        if (currentState.value != AssistantState.LISTENING) {
+            while (isActive && !hasActuallySpoken) {
+                // Request audio focus
+                val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    audioFocusRequest = android.media.AudioFocusRequest.Builder(
+                        android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
+                    ).build()
+                    audioManager.requestAudioFocus(audioFocusRequest!!)
+                } else {
+                    @Suppress("DEPRECATION")
+                    audioManager.requestAudioFocus(null,
+                        android.media.AudioManager.STREAM_VOICE_CALL,
+                        android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                }
+
+                speechManager.startListening("ja-JP").collectLatest { result ->
+                    when (result) {
+                        is SpeechResult.Ready -> {
                             currentState.value = AssistantState.LISTENING
                             displayText.value = "Listening..."
+                            toneGenerator.startTone(android.media.ToneGenerator.TONE_PROP_BEEP)
                         }
-                    }
-                    is SpeechResult.RmsChanged -> {}
-                    is SpeechResult.PartialResult -> {
-                        partialText.value = result.text
-                    }
-                    is SpeechResult.Processing -> {
-                        currentState.value = AssistantState.PROCESSING
-                        displayText.value = "Processing..."
-                    }
-                    is SpeechResult.Result -> {
-                        Log.d(TAG, "Speech result: ${result.text}")
-                        displayText.value = result.text
-                        sendToOpenClaw(result.text)
-                    }
-                    is SpeechResult.Error -> {
-                        Log.e(TAG, "Speech error: ${result.message}")
-
-                        if (result.message.contains("ビジー")) {
-                             // Longer delay and explicit cleanup before retry
-                             speechManager.destroy()
-                             delay(1000)
-                             startListening() // Auto-retry
-                        } else {
-                            currentState.value = AssistantState.ERROR
-                            errorMessage.value = result.message
+                        is SpeechResult.Listening -> {
+                            if (currentState.value != AssistantState.LISTENING) {
+                                currentState.value = AssistantState.LISTENING
+                                displayText.value = "Listening..."
+                            }
                         }
+                        is SpeechResult.Result -> {
+                            hasActuallySpoken = true
+                            displayText.value = result.text
+                            sendToOpenClaw(result.text)
+                        }
+                        is SpeechResult.Error -> {
+                            val elapsed = System.currentTimeMillis() - startTime
+                            val isTimeout = result.code == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || 
+                                          result.code == SpeechRecognizer.ERROR_NO_MATCH
+                            
+                            if (isTimeout && settings.continuousMode && elapsed < 5000) {
+                                Log.d(TAG, "Speech timeout within 5s window ($elapsed ms), retrying...")
+                                // Continue to next loop iteration
+                            } else if (result.code == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
+                                speechManager.destroy()
+                                delay(1000)
+                                // Retrying busy doesn't count against 5s window
+                            } else {
+                                currentState.value = AssistantState.ERROR
+                                errorMessage.value = result.message
+                                hasActuallySpoken = true
+                            }
+                        }
+                        else -> {}
                     }
+                }
+                
+                if (!hasActuallySpoken) {
+                    delay(300)
                 }
             }
         }
@@ -273,7 +278,14 @@ class OpenClawSession(context: Context) : VoiceInteractionSession(context),
                     val responseText = response.getResponseText()
                     if (responseText != null) {
                         displayText.value = responseText
-                        speakResponse(responseText)
+                        if (settings.ttsEnabled) {
+                            speakResponse(responseText)
+                        } else if (settings.continuousMode) {
+                            scope.launch {
+                                delay(500)
+                                startListening()
+                            }
+                        }
                     } else if (response.error != null) {
                         currentState.value = AssistantState.ERROR
                         errorMessage.value = response.error
@@ -301,9 +313,11 @@ class OpenClawSession(context: Context) : VoiceInteractionSession(context),
             abandonAudioFocus()
 
             if (success) {
-                // 読み上げ完了後、連続会話のため再度リスニング開始
-                delay(500) // Reduced from 1000ms since AudioFocus is now properly released
-                startListening()
+                // 読み上げ完了後、連続会話モードが有効なら再度リスニング開始
+                if (settings.continuousMode) {
+                    delay(500) // Reduced from 1000ms since AudioFocus is now properly released
+                    startListening()
+                }
             } else {
                 currentState.value = AssistantState.ERROR
                 errorMessage.value = "Speech error"
