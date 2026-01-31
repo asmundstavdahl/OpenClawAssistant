@@ -3,6 +3,7 @@ package com.openclaw.assistant.speech
 import android.content.Context
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.util.Log
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -10,6 +11,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.resume
+
+private const val TAG = "TTSManager"
 
 /**
  * テキスト読み上げ（TTS）マネージャー
@@ -21,11 +24,16 @@ class TTSManager(context: Context) {
     private var pendingSpeak: (() -> Unit)? = null
 
     init {
-        tts = TextToSpeech(context) { status ->
+        Log.e(TAG, "Initializing TTS...")
+        // Try with explicit engine package name
+        val engine = "com.google.android.tts"
+        tts = TextToSpeech(context.applicationContext, { status ->
+            Log.e(TAG, "TTS init callback, status=$status (SUCCESS=${TextToSpeech.SUCCESS})")
             if (status == TextToSpeech.SUCCESS) {
                 isInitialized = true
                 // 日本語を優先、なければデフォルト
                 val result = tts?.setLanguage(Locale.JAPANESE)
+                Log.e(TAG, "setLanguage result=$result")
                 if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
                     tts?.setLanguage(Locale.getDefault())
                 }
@@ -36,6 +44,30 @@ class TTSManager(context: Context) {
                 // 初期化待ちの発話があれば実行
                 pendingSpeak?.invoke()
                 pendingSpeak = null
+            } else {
+                Log.e(TAG, "TTS init FAILED with status=$status, trying without engine...")
+                // Retry without specifying engine
+                tryInitWithoutEngine(context.applicationContext)
+            }
+        }, engine)
+    }
+
+    private fun tryInitWithoutEngine(context: Context) {
+        tts = TextToSpeech(context) { status ->
+            Log.e(TAG, "TTS retry init callback, status=$status")
+            if (status == TextToSpeech.SUCCESS) {
+                isInitialized = true
+                val result = tts?.setLanguage(Locale.JAPANESE)
+                Log.e(TAG, "setLanguage result=$result")
+                if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    tts?.setLanguage(Locale.getDefault())
+                }
+                tts?.setSpeechRate(1.5f)
+                tts?.setPitch(1.0f)
+                pendingSpeak?.invoke()
+                pendingSpeak = null
+            } else {
+                Log.e(TAG, "TTS retry also FAILED with status=$status")
             }
         }
     }

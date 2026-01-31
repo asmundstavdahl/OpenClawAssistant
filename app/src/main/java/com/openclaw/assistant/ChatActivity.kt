@@ -3,6 +3,8 @@ package com.openclaw.assistant
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.speech.tts.TextToSpeech
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -41,14 +43,21 @@ import com.openclaw.assistant.ui.chat.ChatUiState
 import com.openclaw.assistant.ui.chat.ChatViewModel
 import com.openclaw.assistant.ui.theme.OpenClawAssistantTheme
 import androidx.compose.material3.TextButton
+import java.util.Locale
 
+private const val TAG = "ChatActivity"
 
-class ChatActivity : ComponentActivity() {
+class ChatActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private val viewModel: ChatViewModel by viewModels()
+    private var tts: TextToSpeech? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Initialize TTS with Activity context (important for MIUI!)
+        Log.e(TAG, "Initializing TTS with Activity context...")
+        tts = TextToSpeech(this, this)
 
         // Request Microphone permission if not granted
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) 
@@ -68,6 +77,7 @@ class ChatActivity : ComponentActivity() {
                     uiState = uiState,
                     onSendMessage = { viewModel.sendMessage(it) },
                     onStartListening = { 
+                        Log.e(TAG, "onStartListening called, permission=${checkPermission()}")
                         if (checkPermission()) {
                             viewModel.startListening()
                         } else {
@@ -80,6 +90,32 @@ class ChatActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onInit(status: Int) {
+        Log.e(TAG, "TTS onInit callback, status=$status (SUCCESS=${TextToSpeech.SUCCESS})")
+        if (status == TextToSpeech.SUCCESS) {
+            val result = tts?.setLanguage(Locale.JAPANESE)
+            Log.e(TAG, "TTS setLanguage result=$result")
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts?.setLanguage(Locale.getDefault())
+            }
+            tts?.setSpeechRate(1.5f)
+            tts?.setPitch(1.0f)
+            
+            // Pass TTS to ViewModel
+            tts?.let { viewModel.setTTS(it) }
+            Log.e(TAG, "TTS initialized successfully and passed to ViewModel")
+        } else {
+            Log.e(TAG, "TTS initialization FAILED with status=$status")
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        tts?.stop()
+        tts?.shutdown()
+        tts = null
     }
 
     private fun checkPermission(): Boolean {
@@ -319,7 +355,10 @@ fun ChatInputArea(
         )
 
         FloatingActionButton(
-            onClick = if (value.isBlank()) onMicClick else onSend,
+            onClick = {
+                android.util.Log.e("ChatInputArea", "FAB clicked, value.isBlank=${value.isBlank()}, isListening=$isListening")
+                if (value.isBlank()) onMicClick() else onSend()
+            },
             containerColor = if (value.isBlank() && isListening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
             shape = CircleShape
         ) {

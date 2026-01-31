@@ -1,19 +1,26 @@
 package com.openclaw.assistant.ui.chat
 
 import android.app.Application
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.openclaw.assistant.api.OpenClawClient
 import com.openclaw.assistant.data.SettingsRepository
 import com.openclaw.assistant.speech.SpeechRecognizerManager
 import com.openclaw.assistant.speech.SpeechResult
-import com.openclaw.assistant.speech.TTSManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import java.util.Locale
 import java.util.UUID
+import kotlin.coroutines.resume
+
+private const val TAG = "ChatViewModel"
 
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
@@ -39,7 +46,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val settings = SettingsRepository.getInstance(application)
     private val apiClient = OpenClawClient()
     private val speechManager = SpeechRecognizerManager(application)
-    private val ttsManager = TTSManager(application)
+    
+    // TTS will be set from Activity
+    private var tts: TextToSpeech? = null
+    private var isTTSReady = false
+
+    /**
+     * ActivityからTTSを設定する
+     */
+    fun setTTS(textToSpeech: TextToSpeech) {
+        Log.e(TAG, "setTTS called")
+        tts = textToSpeech
+        isTTSReady = true
+    }
 
     fun sendMessage(text: String) {
         if (text.isBlank()) return
@@ -79,6 +98,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var listeningJob: kotlinx.coroutines.Job? = null
 
     fun startListening() {
+        Log.e(TAG, "startListening() called, isListening=${_uiState.value.isListening}")
         if (_uiState.value.isListening) return
 
         lastInputWasVoice = true // Mark as voice input
@@ -87,16 +107,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         listeningJob?.cancel()
 
         // Stop TTS if speaking
-        ttsManager.stop()
+        tts?.stop()
 
         // Wait for TTS resource release before starting mic
         viewModelScope.launch {
             kotlinx.coroutines.delay(500) // Wait for TTS to release resources
 
+            Log.e(TAG, "Setting isListening = true")
             _uiState.update { it.copy(isListening = true, partialText = "") }
 
             listeningJob = viewModelScope.launch {
+                Log.e(TAG, "Starting speechManager.startListening()")
                 speechManager.startListening("ja-JP").collect { result ->
+                    Log.e(TAG, "SpeechResult: $result")
                     when (result) {
                         is SpeechResult.PartialResult -> {
                             _uiState.update { it.copy(partialText = result.text) }
@@ -125,7 +148,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun speak(text: String) {
         viewModelScope.launch {
             _uiState.update { it.copy(isSpeaking = true) }
-            val success = ttsManager.speak(text)
+            
+            val success = if (isTTSReady && tts != null) {
+                speakWithTTS(text)
+            } else {
+                Log.e(TAG, "TTS not ready, skipping speech")
+                false
+            }
+            
             _uiState.update { it.copy(isSpeaking = false) }
 
             // If it was a voice conversation, continue listening
@@ -139,10 +169,53 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    private suspend fun speakWithTTS(text: String): Boolean = suspendCancellableCoroutine { continuation ->
+        val utteranceId = UUID.randomUUID().toString()
+        
+        val listener = object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+            
+            override fun onDone(utteranceId: String?) {
+                if (continuation.isActive) {
+                    continuation.resume(true)
+                }
+            }
+            
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {
+                if (continuation.isActive) {
+                    continuation.resume(false)
+                }
+            }
+            
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                Log.e(TAG, "TTS error: $errorCode")
+                if (continuation.isActive) {
+                    continuation.resume(false)
+                }
+            }
+        }
+        
+        tts?.setOnUtteranceProgressListener(listener)
+        val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        Log.e(TAG, "TTS speak result: $result")
+        
+        if (result != TextToSpeech.SUCCESS) {
+            Log.e(TAG, "TTS speak failed immediately")
+            if (continuation.isActive) {
+                continuation.resume(false)
+            }
+        }
+        
+        continuation.invokeOnCancellation {
+            tts?.stop()
+        }
+    }
     
     fun stopSpeaking() {
         lastInputWasVoice = false // Stop loop if manually stopped
-        ttsManager.stop()
+        tts?.stop()
         _uiState.update { it.copy(isSpeaking = false) }
     }
 
@@ -156,6 +229,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         speechManager.destroy()
-        ttsManager.shutdown()
+        // Don't shutdown TTS here - Activity owns it
     }
 }
