@@ -15,41 +15,39 @@ import kotlin.coroutines.resume
 private const val TAG = "TTSManager"
 
 /**
- * テキスト読み上げ（TTS）マネージャー
+ * Text-to-Speech (TTS) Manager with brute-force recovery for MIUI
  */
-class TTSManager(context: Context) {
+class TTSManager(private val context: Context) {
 
     private var tts: TextToSpeech? = null
     private var isInitialized = false
     private var pendingSpeak: (() -> Unit)? = null
 
     init {
-        initializeWithPriority(context.applicationContext)
+        initializeWithBruteForce()
     }
 
-    private fun initializeWithPriority(context: Context) {
-        Log.e(TAG, "Initializing TTS with Google engine priority...")
-        // Try Google TTS explicitly for better compatibility on MIUI/Chinese ROMs
-        tts = TextToSpeech(context, { status ->
+    private fun initializeWithBruteForce() {
+        Log.e(TAG, "Force-starting TTS sequence...")
+        
+        // 1. Try Google TTS explicitly
+        tts = TextToSpeech(context.applicationContext, { status ->
             if (status == TextToSpeech.SUCCESS) {
-                Log.e(TAG, "TTS initialized successfully with Google engine")
+                Log.e(TAG, "Initialized with Google engine")
                 onInitSuccess()
             } else {
-                Log.e(TAG, "Google TTS initialization FAILED (status=$status), retrying with system default...")
-                retryWithDefault(context)
+                Log.e(TAG, "Google TTS failed, falling back to system default")
+                // 2. Try System Default
+                tts = TextToSpeech(context.applicationContext) { status2 ->
+                    if (status2 == TextToSpeech.SUCCESS) {
+                        Log.e(TAG, "Initialized with System Default engine")
+                        onInitSuccess()
+                    } else {
+                        Log.e(TAG, "FATAL: All TTS initialization attempts failed")
+                    }
+                }
             }
         }, TTSUtils.GOOGLE_TTS_PACKAGE)
-    }
-
-    private fun retryWithDefault(context: Context) {
-        tts = TextToSpeech(context) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                Log.e(TAG, "TTS initialized successfully with system default engine")
-                onInitSuccess()
-            } else {
-                Log.e(TAG, "All TTS initialization attempts FAILED (status=$status)")
-            }
-        }
     }
 
     private fun onInitSuccess() {
@@ -60,32 +58,21 @@ class TTSManager(context: Context) {
     }
 
     /**
-     * テキストを読み上げ（suspend版）
+     * Attempts to "wake up" the engine if it was hidden or lost
      */
+    fun reinitialize() {
+        isInitialized = false
+        tts?.shutdown()
+        initializeWithBruteForce()
+    }
+
     suspend fun speak(text: String): Boolean = suspendCancellableCoroutine { continuation ->
         val utteranceId = UUID.randomUUID().toString()
 
         val listener = object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {}
-
-            override fun onDone(utteranceId: String?) {
-                if (continuation.isActive) {
-                    continuation.resume(true)
-                }
-            }
-
-            @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) {
-                if (continuation.isActive) {
-                    continuation.resume(false)
-                }
-            }
-
-            override fun onError(utteranceId: String?, errorCode: Int) {
-                if (continuation.isActive) {
-                    continuation.resume(false)
-                }
-            }
+            override fun onDone(utteranceId: String?) { if (continuation.isActive) continuation.resume(true) }
+            override fun onError(utteranceId: String?) { if (continuation.isActive) continuation.resume(false) }
         }
 
         if (isInitialized) {
@@ -93,51 +80,26 @@ class TTSManager(context: Context) {
             tts?.setOnUtteranceProgressListener(listener)
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
         } else {
-            // 初期化待ち
             pendingSpeak = {
                 TTSUtils.applyLanguageForText(tts, text)
                 tts?.setOnUtteranceProgressListener(listener)
                 tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
             }
+            // Wait up to 5s
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 if (continuation.isActive && !isInitialized) {
-                    pendingSpeak = null
                     continuation.resume(false)
                 }
-            }, 3000)
-        }
-
-        continuation.invokeOnCancellation {
-            stop()
+            }, 5000)
         }
     }
 
-    /**
-     * テキストを読み上げ（Flow版 - 進捗通知あり）
-     */
     fun speakWithProgress(text: String): Flow<TTSState> = callbackFlow {
         val utteranceId = UUID.randomUUID().toString()
-
         val listener = object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {
-                trySend(TTSState.Speaking)
-            }
-
-            override fun onDone(utteranceId: String?) {
-                trySend(TTSState.Done)
-                close()
-            }
-
-            @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) {
-                trySend(TTSState.Error("読み上げエラー"))
-                close()
-            }
-
-            override fun onError(utteranceId: String?, errorCode: Int) {
-                trySend(TTSState.Error("読み上げエラー: $errorCode"))
-                close()
-            }
+            override fun onStart(utteranceId: String?) { trySend(TTSState.Speaking) }
+            override fun onDone(utteranceId: String?) { trySend(TTSState.Done); close() }
+            override fun onError(utteranceId: String?) { trySend(TTSState.Error("Error")); close() }
         }
 
         if (isInitialized) {
@@ -153,49 +115,21 @@ class TTSManager(context: Context) {
                 tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
             }
         }
-
-        awaitClose {
-            stop()
-        }
+        awaitClose { stop() }
     }
 
-    /**
-     * キューに追加して読み上げ
-     */
     fun speakQueued(text: String) {
         if (isInitialized) {
             TTSUtils.applyLanguageForText(tts, text)
-            val utteranceId = UUID.randomUUID().toString()
-            tts?.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
+            tts?.speak(text, TextToSpeech.QUEUE_ADD, null, UUID.randomUUID().toString())
         }
     }
 
-    /**
-     * 読み上げを停止
-     */
-    fun stop() {
-        tts?.stop()
-    }
-
-    /**
-     * リソースを解放
-     */
-    fun shutdown() {
-        tts?.stop()
-        tts?.shutdown()
-        tts = null
-        isInitialized = false
-    }
-
-    /**
-     * 初期化済みかチェック
-     */
+    fun stop() { tts?.stop() }
+    fun shutdown() { tts?.shutdown(); isInitialized = false }
     fun isReady(): Boolean = isInitialized
 }
 
-/**
- * TTSの状態
- */
 sealed class TTSState {
     object Preparing : TTSState()
     object Speaking : TTSState()

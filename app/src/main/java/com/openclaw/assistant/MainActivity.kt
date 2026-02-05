@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -68,9 +69,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         super.onCreate(savedInstanceState)
         settings = SettingsRepository.getInstance(this)
         
-        // 診断用にTTSを初期化
         initializeTTS()
-        
         checkPermissions()
 
         setContent {
@@ -81,7 +80,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     onOpenSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
                     onOpenAssistantSettings = { openAssistantSettings() },
                     onToggleHotword = { enabled -> toggleHotwordService(enabled) },
-                    onRefreshDiagnostics = { runDiagnostics() }
+                    onRefreshDiagnostics = { 
+                        initializeTTS() // Re-init on manual refresh
+                    }
                 )
             }
         }
@@ -89,14 +90,16 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private fun initializeTTS() {
         tts?.shutdown()
+        Log.e("MainActivity", "Initializing TTS with Google Engine priority...")
         tts = TextToSpeech(this, this, TTSUtils.GOOGLE_TTS_PACKAGE)
     }
 
     override fun onInit(status: Int) {
+        Log.e("MainActivity", "TTS onInit status=$status")
         if (status == TextToSpeech.SUCCESS) {
             runDiagnostics()
         } else {
-            // Google TTS失敗時はデフォルトでリトライ
+            Log.e("MainActivity", "Google TTS failed, trying default...")
             tts = TextToSpeech(this) { 
                 runDiagnostics()
             }
@@ -109,22 +112,14 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private fun checkPermissions() {
         val permissions = mutableListOf<String>()
-        
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) 
-            != PackageManager.PERMISSION_GRANTED) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             permissions.add(Manifest.permission.RECORD_AUDIO)
         }
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) 
-                != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.POST_NOTIFICATIONS)
-            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && 
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
-
-        if (permissions.isNotEmpty()) {
-            permissionLauncher.launch(permissions.toTypedArray())
-        }
+        if (permissions.isNotEmpty()) permissionLauncher.launch(permissions.toTypedArray())
     }
 
     private fun openAssistantSettings() {
@@ -152,11 +147,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     fun isAssistantActive(): Boolean {
         return try {
-            val setting = Settings.Secure.getString(contentResolver, "assistant")
-            setting?.contains(packageName) == true
-        } catch (e: Exception) {
-            false
-        }
+            Settings.Secure.getString(contentResolver, "assistant")?.contains(packageName) == true
+        } catch (e: Exception) { false }
     }
 
     override fun onDestroy() {
@@ -222,184 +214,72 @@ fun MainScreen(
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Status card
             StatusCard(isConfigured = isConfigured)
-            
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Diagnostic Panel
             if (diagnostic != null) {
-                DiagnosticPanel(diagnostic)
+                DiagnosticPanel(diagnostic, onRefreshDiagnostics)
                 Spacer(modifier = Modifier.height(16.dp))
             }
 
-            // Quick actions - 2 cards side by side
-            Text(
-                text = stringResource(R.string.activation_methods),
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.fillMaxWidth()
-            )
-            
+            Text(text = stringResource(R.string.activation_methods), fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth())
             Spacer(modifier = Modifier.height(12.dp))
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Max),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                // Home button long press
-                CompactActionCard(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                    icon = Icons.Default.Home,
-                    title = stringResource(R.string.home_button),
-                    description = if (isAssistantSet) stringResource(R.string.active) else stringResource(R.string.not_set),
-                    isActive = isAssistantSet,
-                    onClick = onOpenAssistantSettings,
-                    showInfoIcon = true,
-                    onInfoClick = { showTroubleshooting = true }
-                )
-
-                // Hotword
-                CompactActionCard(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
-                    icon = Icons.Default.Mic,
-                    title = settings.getWakeWordDisplayName(),
-                    description = if (hotwordEnabled) stringResource(R.string.active) else stringResource(R.string.disabled),
-                    isActive = hotwordEnabled,
-                    showSwitch = true,
-                    switchValue = hotwordEnabled,
-                    onSwitchChange = { enabled ->
-                        if (enabled && !isConfigured) {
-                            return@CompactActionCard
-                        }
-                        hotwordEnabled = enabled
-                        onToggleHotword(enabled)
-                    }
-                )
+            Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                CompactActionCard(modifier = Modifier.weight(1f).fillMaxHeight(), icon = Icons.Default.Home, title = stringResource(R.string.home_button), description = if (isAssistantSet) stringResource(R.string.active) else stringResource(R.string.not_set), isActive = isAssistantSet, onClick = onOpenAssistantSettings, showInfoIcon = true, onInfoClick = { showTroubleshooting = true })
+                CompactActionCard(modifier = Modifier.weight(1f).fillMaxHeight(), icon = Icons.Default.Mic, title = settings.getWakeWordDisplayName(), description = if (hotwordEnabled) stringResource(R.string.active) else stringResource(R.string.disabled), isActive = hotwordEnabled, showSwitch = true, switchValue = hotwordEnabled, onSwitchChange = { enabled -> if (enabled && !isConfigured) return@CompactActionCard; hotwordEnabled = enabled; onToggleHotword(enabled) })
             }
 
             Spacer(modifier = Modifier.height(24.dp))
-
-            // Open Chat - Large button
             val chatContext = LocalContext.current
-            Button(
-                onClick = {
-                    val intent = Intent(chatContext, ChatActivity::class.java)
-                    chatContext.startActivity(intent)
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                shape = RoundedCornerShape(16.dp)
-            ) {
+            Button(onClick = { chatContext.startActivity(Intent(chatContext, ChatActivity::class.java)) }, modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(16.dp)) {
                 Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null)
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(stringResource(R.string.open_chat), fontSize = 18.sp, fontWeight = FontWeight.Medium)
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Configuration warning
             if (!isConfigured) {
-                WarningCard(
-                    message = stringResource(R.string.error_no_webhook),
-                    onClick = onOpenSettings
-                )
+                Spacer(modifier = Modifier.height(24.dp))
+                WarningCard(message = stringResource(R.string.error_no_webhook), onClick = onOpenSettings)
             }
         }
     }
-
-    if (showTroubleshooting) {
-        TroubleshootingDialog(onDismiss = { showTroubleshooting = false })
-    }
-
-    if (showHowToUse) {
-        HowToUseDialog(onDismiss = { showHowToUse = false })
-    }
+    if (showTroubleshooting) TroubleshootingDialog(onDismiss = { showTroubleshooting = false })
+    if (showHowToUse) HowToUseDialog(onDismiss = { showHowToUse = false })
 }
 
 @Composable
 fun StatusCard(isConfigured: Boolean) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isConfigured) Color(0xFF4CAF50) else Color(0xFFFFC107)
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(60.dp)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.2f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = if (isConfigured) Icons.Default.CheckCircle else Icons.Default.Warning,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(32.dp)
-                )
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = if (isConfigured) Color(0xFF4CAF50) else Color(0xFFFFC107))) {
+        Row(modifier = Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.size(60.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.2f)), contentAlignment = Alignment.Center) {
+                Icon(imageVector = if (isConfigured) Icons.Default.CheckCircle else Icons.Default.Warning, contentDescription = null, tint = Color.White, modifier = Modifier.size(32.dp))
             }
-            
             Spacer(modifier = Modifier.width(16.dp))
-            
             Column {
-                Text(
-                    text = if (isConfigured) stringResource(R.string.ready) else stringResource(R.string.setup_required),
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-                Text(
-                    text = if (isConfigured) stringResource(R.string.connected_to_openclaw) else stringResource(R.string.error_no_webhook),
-                    fontSize = 14.sp,
-                    color = Color.White.copy(alpha = 0.9f)
-                )
+                Text(text = if (isConfigured) stringResource(R.string.ready) else stringResource(R.string.setup_required), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text(text = if (isConfigured) stringResource(R.string.connected_to_openclaw) else stringResource(R.string.error_no_webhook), fontSize = 14.sp, color = Color.White.copy(alpha = 0.9f))
             }
         }
     }
 }
 
 @Composable
-fun DiagnosticPanel(diagnostic: VoiceDiagnostic) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-    ) {
+fun DiagnosticPanel(diagnostic: VoiceDiagnostic, onRefresh: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text("Voice System Check", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                DiagnosticItem(
-                    label = "In: ${diagnostic.sttEngine?.take(10) ?: "Default"}", 
-                    status = diagnostic.sttStatus, 
-                    modifier = Modifier.weight(1f)
-                )
-                DiagnosticItem(
-                    label = "Out: ${diagnostic.ttsEngine?.split('.')?.lastOrNull() ?: "Default"}", 
-                    status = diagnostic.ttsStatus, 
-                    modifier = Modifier.weight(1f)
-                )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Voice System Check", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                IconButton(onClick = onRefresh, modifier = Modifier.size(24.dp)) { Icon(Icons.Default.Refresh, contentDescription = "Refresh", modifier = Modifier.size(16.dp)) }
             }
-
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                DiagnosticItem(label = "In: ${diagnostic.sttEngine?.take(10) ?: "Def"}", status = diagnostic.sttStatus, modifier = Modifier.weight(1f))
+                DiagnosticItem(label = "Out: ${diagnostic.ttsEngine?.split('.')?.lastOrNull() ?: "null"}", status = diagnostic.ttsStatus, modifier = Modifier.weight(1f))
+            }
             if (diagnostic.suggestions.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(12.dp))
-                diagnostic.suggestions.forEach { suggestion ->
-                    SuggestionItem(suggestion)
-                }
+                diagnostic.suggestions.forEach { SuggestionItem(it) }
             }
         }
     }
@@ -407,17 +287,8 @@ fun DiagnosticPanel(diagnostic: VoiceDiagnostic) {
 
 @Composable
 fun DiagnosticItem(label: String, status: DiagnosticStatus, modifier: Modifier = Modifier) {
-    val color = when (status) {
-        DiagnosticStatus.READY -> Color(0xFF4CAF50)
-        DiagnosticStatus.WARNING -> Color(0xFFFFC107)
-        DiagnosticStatus.ERROR -> Color(0xFFF44336)
-    }
-    val icon = when (status) {
-        DiagnosticStatus.READY -> Icons.Default.Check
-        DiagnosticStatus.WARNING -> Icons.Default.Info
-        DiagnosticStatus.ERROR -> Icons.Default.Error
-    }
-
+    val color = when (status) { DiagnosticStatus.READY -> Color(0xFF4CAF50); DiagnosticStatus.WARNING -> Color(0xFFFFC107); DiagnosticStatus.ERROR -> Color(0xFFF44336) }
+    val icon = when (status) { DiagnosticStatus.READY -> Icons.Default.Check; DiagnosticStatus.WARNING -> Icons.Default.Info; DiagnosticStatus.ERROR -> Icons.Default.Error }
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
         Spacer(modifier = Modifier.width(4.dp))
@@ -428,185 +299,50 @@ fun DiagnosticItem(label: String, status: DiagnosticStatus, modifier: Modifier =
 @Composable
 fun SuggestionItem(suggestion: com.openclaw.assistant.speech.diagnostics.DiagnosticSuggestion) {
     val context = LocalContext.current
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(8.dp),
-        tonalElevation = 1.dp
-    ) {
-        Row(
-            modifier = Modifier.padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = suggestion.message,
-                modifier = Modifier.weight(1f),
-                fontSize = 12.sp,
-                lineHeight = 16.sp
-            )
+    Surface(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(8.dp), tonalElevation = 1.dp) {
+        Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(text = suggestion.message, modifier = Modifier.weight(1f), fontSize = 12.sp, lineHeight = 16.sp)
             if (suggestion.actionLabel != null && suggestion.intent != null) {
-                TextButton(
-                    onClick = { 
-                        try {
-                            context.startActivity(suggestion.intent)
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "Cannot open settings", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    contentPadding = PaddingValues(horizontal = 8.dp)
-                ) {
-                    Text(suggestion.actionLabel, fontSize = 12.sp)
-                }
+                TextButton(onClick = { try { context.startActivity(suggestion.intent) } catch (e: Exception) { Toast.makeText(context, "Error", Toast.LENGTH_SHORT).show() } }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(suggestion.actionLabel, fontSize = 12.sp) }
             }
         }
     }
 }
 
 @Composable
-fun CompactActionCard(
-    modifier: Modifier = Modifier,
-    icon: ImageVector,
-    title: String,
-    description: String,
-    isActive: Boolean = false,
-    onClick: (() -> Unit)? = null,
-    showSwitch: Boolean = false,
-    switchValue: Boolean = false,
-    onSwitchChange: ((Boolean) -> Unit)? = null,
-    showInfoIcon: Boolean = false,
-    onInfoClick: (() -> Unit)? = null
-) {
-    Card(
-        modifier = modifier,
-        onClick = { onClick?.invoke() },
-        enabled = onClick != null && !showSwitch,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(32.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = if (isActive) MaterialTheme.colorScheme.primary else Color.Gray,
-                        modifier = Modifier.size(28.dp)
-                    )
-                    if (showInfoIcon) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.HelpOutline,
-                            contentDescription = stringResource(R.string.how_to_use),
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .size(20.dp)
-                                .clickable { onInfoClick?.invoke() }
-                        )
-                    }
-                    if (showSwitch) {
-                        Switch(
-                            checked = switchValue,
-                            onCheckedChange = onSwitchChange,
-                            modifier = Modifier
-                                .scale(0.8f)
-                                .offset(y = (-8).dp)
-                        )
-                    }
+fun CompactActionCard(modifier: Modifier = Modifier, icon: ImageVector, title: String, description: String, isActive: Boolean = false, onClick: (() -> Unit)? = null, showSwitch: Boolean = false, switchValue: Boolean = false, onSwitchChange: ((Boolean) -> Unit)? = null, showInfoIcon: Boolean = false, onInfoClick: (() -> Unit)? = null) {
+    Card(modifier = modifier, onClick = { onClick?.invoke() }, enabled = onClick != null && !showSwitch, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(modifier = Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(modifier = Modifier.weight(1f).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(modifier = Modifier.fillMaxWidth().height(32.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Icon(imageVector = icon, contentDescription = null, tint = if (isActive) MaterialTheme.colorScheme.primary else Color.Gray, modifier = Modifier.size(28.dp))
+                    if (showInfoIcon) Icon(imageVector = Icons.AutoMirrored.Filled.HelpOutline, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp).clickable { onInfoClick?.invoke() })
+                    if (showSwitch) Switch(checked = switchValue, onCheckedChange = onSwitchChange, modifier = Modifier.scale(0.8f).offset(y = (-8).dp))
                 }
-                
                 Spacer(modifier = Modifier.height(8.dp))
-                
-                Text(
-                    text = title,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                )
+                Text(text = title, fontSize = 14.sp, fontWeight = FontWeight.Medium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
             }
-            
-            Text(
-                text = description,
-                fontSize = 12.sp,
-                color = if (isActive) Color(0xFF4CAF50) else Color.Gray,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-            )
+            Text(text = description, fontSize = 12.sp, color = if (isActive) Color(0xFF4CAF50) else Color.Gray, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
         }
     }
 }
 
 @Composable
 fun WarningCard(message: String, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)),
-        onClick = onClick
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Default.Warning,
-                contentDescription = null,
-                tint = Color(0xFFFF9800),
-                modifier = Modifier.size(24.dp)
-            )
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)), onClick = onClick) {
+        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(imageVector = Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFF9800), modifier = Modifier.size(24.dp))
             Spacer(modifier = Modifier.width(12.dp))
-            Text(
-                text = message,
-                color = Color(0xFFE65100),
-                modifier = Modifier.weight(1f)
-            )
-            Icon(
-                imageVector = Icons.Default.ChevronRight,
-                contentDescription = null,
-                tint = Color(0xFFFF9800)
-            )
+            Text(text = message, color = Color(0xFFE65100), modifier = Modifier.weight(1f))
+            Icon(imageVector = Icons.Default.ChevronRight, contentDescription = null, tint = Color(0xFFFF9800))
         }
     }
 }
 
 @Composable
 fun UsageStep(number: String, text: String) {
-    Row(
-        modifier = Modifier.padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(24.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = number,
-                color = Color.White,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
+    Row(modifier = Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(modifier = Modifier.size(24.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) { Text(text = number, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
         Spacer(modifier = Modifier.width(12.dp))
         Text(text = text, fontSize = 14.sp)
     }
@@ -614,91 +350,23 @@ fun UsageStep(number: String, text: String) {
 
 @Composable
 fun HowToUseDialog(onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.how_to_use)) },
-        text = {
-            Column {
-                UsageStep(number = "1", text = stringResource(R.string.step_1))
-                UsageStep(number = "2", text = stringResource(R.string.step_2))
-                UsageStep(number = "3", text = stringResource(R.string.step_3))
-                UsageStep(number = "4", text = stringResource(R.string.step_4))
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.got_it))
-            }
-        }
-    )
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(stringResource(R.string.how_to_use)) }, text = { Column { (1..4).forEach { UsageStep(it.toString(), stringResource(context.resources.getIdentifier("step_$it", "string", context.packageName))) } } }, confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.got_it)) } })
 }
 
 @Composable
 fun TroubleshootingDialog(onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.assist_gesture_not_working)) },
-        text = {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                modifier = Modifier.verticalScroll(rememberScrollState())
-            ) {
-                Text(
-                    stringResource(R.string.troubleshooting_intro),
-                    fontSize = 14.sp
-                )
-                
-                BulletPoint(
-                    title = stringResource(R.string.circle_to_search_title), 
-                    desc = stringResource(R.string.circle_to_search_desc)
-                )
-                
-                BulletPoint(
-                    title = stringResource(R.string.gesture_navigation_title), 
-                    desc = stringResource(R.string.gesture_navigation_desc)
-                )
-                
-                BulletPoint(
-                    title = stringResource(R.string.google_app_setting_title), 
-                    desc = stringResource(R.string.google_app_setting_desc)
-                )
-
-                BulletPoint(
-                    title = stringResource(R.string.refresh_binding_title), 
-                    desc = stringResource(R.string.refresh_binding_desc)
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-                HorizontalDivider()
-                Spacer(modifier = Modifier.height(8.dp))
-
-                val context = LocalContext.current
-                Button(
-                    onClick = {
-                        val intent = Intent(context, OpenClawAssistantService::class.java).apply {
-                            action = OpenClawAssistantService.ACTION_SHOW_ASSISTANT
-                        }
-                        context.startService(intent)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
-                ) {
-                    Text(stringResource(R.string.debug_force_start))
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.got_it))
-            }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(stringResource(R.string.assist_gesture_not_working)) }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
+            Text(stringResource(R.string.troubleshooting_intro), fontSize = 14.sp)
+            listOf("circle_to_search", "gesture_navigation", "google_app_setting", "refresh_binding").forEach { BulletPoint(stringResource(context.resources.getIdentifier("${it}_title", "string", context.packageName)), stringResource(context.resources.getIdentifier("${it}_desc", "string", context.packageName))) }
+            Spacer(modifier = Modifier.height(8.dp)); HorizontalDivider(); Spacer(modifier = Modifier.height(8.dp))
+            val context = LocalContext.current
+            Button(onClick = { context.startService(Intent(context, OpenClawAssistantService::class.java).apply { action = OpenClawAssistantService.ACTION_SHOW_ASSISTANT }) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)) { Text(stringResource(R.string.debug_force_start)) }
         }
-    )
+    }, confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.got_it)) } })
 }
 
 @Composable
 fun BulletPoint(title: String, desc: String) {
-    Column {
-        Text("• $title", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-        Text(desc, fontSize = 13.sp, color = Color.Gray, modifier = Modifier.padding(start = 12.dp))
-    }
+    Column { Text("• $title", fontWeight = FontWeight.Bold, fontSize = 14.sp); Text(desc, fontSize = 13.sp, color = Color.Gray, modifier = Modifier.padding(start = 12.dp)) }
 }

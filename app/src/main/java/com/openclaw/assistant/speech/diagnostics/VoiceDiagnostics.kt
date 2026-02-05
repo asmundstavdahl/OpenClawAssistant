@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
-import android.util.Log
 import java.util.Locale
 
 /**
@@ -28,7 +27,8 @@ enum class DiagnosticStatus {
 data class DiagnosticSuggestion(
     val message: String,
     val actionLabel: String? = null,
-    val intent: Intent? = null
+    val intent: Intent? = null,
+    val isSystemSetting: Boolean = false
 )
 
 /**
@@ -68,8 +68,8 @@ class VoiceDiagnostics(private val context: Context) {
                 status = DiagnosticStatus.ERROR,
                 suggestions = listOf(
                     DiagnosticSuggestion(
-                        "音声認識サービスが見つかりません。Googleアプリがインストールされているか確認してください。",
-                        "Playストアを開く",
+                        "Speech recognition service not found. Make sure Google app is installed.",
+                        "Open Store",
                         null
                     )
                 )
@@ -79,44 +79,62 @@ class VoiceDiagnostics(private val context: Context) {
     }
 
     private fun checkTTS(tts: TextToSpeech?): ComponentCheckResult {
-        if (tts == null) {
+        val engine = tts?.defaultEngine
+        val currentLocale = Locale.getDefault()
+        val suggestions = mutableListOf<DiagnosticSuggestion>()
+        
+        if (tts == null || engine == null) {
+            // Check if Google TTS is actually installed via Package Manager
+            val isGoogleInstalled = try {
+                context.packageManager.getPackageInfo("com.google.android.tts", 0)
+                true
+            } catch (e: Exception) {
+                false
+            }
+
+            val msg = if (isGoogleInstalled) {
+                "Google TTS is installed but HIDDEN by the system. This is a common MIUI issue."
+            } else {
+                "TTS engine could not be initialized. Engine is null."
+            }
+
+            suggestions.add(
+                DiagnosticSuggestion(
+                    msg,
+                    "Fix in Settings",
+                    Intent("com.android.settings.TTS_SETTINGS"),
+                    true
+                )
+            )
+            
             return ComponentCheckResult(
                 status = DiagnosticStatus.ERROR,
-                suggestions = listOf(DiagnosticSuggestion("TTSエンジンの初期化に失敗しました。"))
+                engine = "null/hidden",
+                suggestions = suggestions
             )
         }
 
-        val engine = tts.defaultEngine
-        val currentLocale = Locale.getDefault()
-        
-        // 言語サポートの詳細チェック
         val langResult = tts.isLanguageAvailable(currentLocale)
         val jaResult = tts.isLanguageAvailable(Locale.JAPANESE)
         
-        val suggestions = mutableListOf<DiagnosticSuggestion>()
-        val missingLangs = mutableListOf<String>()
-
         var status = DiagnosticStatus.READY
 
-        // 現在のロケールがサポートされているか
         if (langResult < TextToSpeech.LANG_AVAILABLE && jaResult < TextToSpeech.LANG_AVAILABLE) {
             status = DiagnosticStatus.WARNING
-            val langName = currentLocale.displayName
             suggestions.add(
                 DiagnosticSuggestion(
-                    "音声データ ($langName) がこのエンジン ($engine) で見つかりません。",
-                    "データの管理",
+                    "Voice data for ${currentLocale.displayName} is missing in $engine.",
+                    "Manage Data",
                     Intent("com.android.settings.TTS_SETTINGS")
                 )
             )
         }
 
-        // エンジンがGoogleでない場合の推奨
         if (engine != "com.google.android.tts") {
             suggestions.add(
                 DiagnosticSuggestion(
-                    "現在は $engine が使用されています。Google音声サービスへの切り替えを推奨します。",
-                    "エンジン設定",
+                    "Currently using $engine. Switch to Google for better support.",
+                    "Select Google",
                     Intent("com.android.settings.TTS_SETTINGS")
                 )
             )
@@ -125,8 +143,7 @@ class VoiceDiagnostics(private val context: Context) {
         return ComponentCheckResult(
             status = status,
             engine = engine,
-            suggestions = suggestions,
-            missingLangs = missingLangs
+            suggestions = suggestions
         )
     }
 }
