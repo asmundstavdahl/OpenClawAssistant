@@ -94,6 +94,7 @@ dependencies {
     
     // Encrypted SharedPreferences
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("com.google.errorprone:error_prone_annotations:2.23.0")
     
     // Vosk
     implementation("com.alphacephei:vosk-android:0.3.47")
